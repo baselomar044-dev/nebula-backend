@@ -57,7 +57,7 @@ app.get('/api/config', (req, res) => {
       debug: true
     },
     models: {
-      anthropic: process.env.ANTHROPIC_API_KEY ? ['claude-sonnet-4-20250514', 'claude-3-5-haiku-20241022'] : [],
+      anthropic: process.env.ANTHROPIC_API_KEY ? ['claude-3-5-sonnet-20241022', 'claude-3-haiku-20240307'] : [],
       openai: process.env.OPENAI_API_KEY ? ['gpt-4o', 'gpt-4o-mini'] : [],
       groq: process.env.GROQ_API_KEY ? ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'] : [],
       gemini: process.env.GEMINI_API_KEY ? ['gemini-1.5-pro', 'gemini-1.5-flash'] : []
