@@ -25,7 +25,7 @@ function selectBestModel(task, availableKeys) {
   
   // Low complexity - cheapest options
   if (availableKeys.deepseek) return { provider: 'deepseek', model: 'deepseek-chat' };
-  if (availableKeys.groq) return { provider: 'groq', model: 'mixtral-8x7b-32768' };
+  if (availableKeys.groq) return { provider: 'groq', model: 'llama-3.3-70b-versatile' };
   if (availableKeys.google) return { provider: 'google', model: 'gemini-1.5-flash' };
   if (availableKeys.anthropic) return { provider: 'anthropic', model: 'claude-3-haiku-20240307' };
   if (availableKeys.openai) return { provider: 'openai', model: 'gpt-4o-mini' };
