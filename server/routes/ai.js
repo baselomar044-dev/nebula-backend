@@ -3,7 +3,6 @@ import fetch from 'node-fetch';
 
 const router = Router();
 
-// AI Providers Config
 const PROVIDERS = {
   anthropic: {
     url: 'https://api.anthropic.com/v1/messages',
@@ -41,15 +40,12 @@ code here
 \`\`\`
 
 5. For multi-file projects, create all necessary files
-6. Explain your approach briefly before code
-7. If you see errors, explain the fix clearly`;
+6. Explain your approach briefly before code`;
 
-// Smart model selection based on task complexity
 function selectModel(message) {
-  const complexKeywords = ['build', 'create', 'full', 'complex', 'application', 'system', 'complete', 'production'];
+  const complexKeywords = ['build', 'create', 'full', 'complex', 'application', 'system', 'complete'];
   const isComplex = complexKeywords.some(k => message.toLowerCase().includes(k));
   
-  // Priority: Anthropic > OpenAI > Groq > Gemini
   if (process.env.ANTHROPIC_API_KEY) {
     return { provider: 'anthropic', model: isComplex ? 'claude-3-5-sonnet-20241022' : 'claude-3-haiku-20240307' };
   }
@@ -65,54 +61,41 @@ function selectModel(message) {
   return null;
 }
 
-// STREAMING endpoint (SSE)
+function parseModel(model, message) {
+  if (!model || model === 'auto') {
+    return selectModel(message);
+  }
+  const [provider, modelName] = model.includes('/') ? model.split('/') : ['auto', model];
+  if (provider !== 'auto' && PROVIDERS[provider]) {
+    return { provider, model: modelName };
+  }
+  return selectModel(message);
+}
+
+// STREAMING endpoint
 router.post('/stream', async (req, res) => {
   const { message, model, context = [] } = req.body;
-  
-  if (!message) {
-    return res.status(400).json({ error: 'Message required' });
-  }
+  if (!message) return res.status(400).json({ error: 'Message required' });
 
-  // Set SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.flushHeaders();
 
+  const selected = parseModel(model, message);
+  if (!selected) {
+    res.write(`data: ${JSON.stringify({ error: 'No AI provider configured' })}\n\n`);
+    return res.end();
+  }
+
+  const { provider, model: selectedModel } = selected;
+  const apiKey = PROVIDERS[provider].getKey();
+  const messages = [...context.slice(-10), { role: 'user', content: message }];
+
   try {
-    let selected;
-    if (model && model !== 'auto') {
-      // Parse model string like "anthropic/claude-3-5-sonnet-20241022"
-      const [provider, modelName] = model.includes('/') ? model.split('/') : ['auto', model];
-      if (provider !== 'auto' && PROVIDERS[provider]) {
-        selected = { provider, model: modelName };
-      } else {
-        selected = selectModel(message);
-      }
-    } else {
-      selected = selectModel(message);
-    }
-
-    if (!selected) {
-      res.write(`data: ${JSON.stringify({ error: 'No AI provider configured' })}\n\n`);
-      res.end();
-      return;
-    }
-
-    const { provider, model: selectedModel } = selected;
-    const apiKey = PROVIDERS[provider].getKey();
-
-    // Build messages array
-    const messages = [
-      ...context.slice(-10), // Last 10 messages for context
-      { role: 'user', content: message }
-    ];
-
-    let response;
-
     if (provider === 'anthropic') {
-      response = await fetch(PROVIDERS.anthropic.url, {
+      const response = await fetch(PROVIDERS.anthropic.url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -123,19 +106,15 @@ router.post('/stream', async (req, res) => {
           model: selectedModel,
           max_tokens: 8192,
           system: SYSTEM_PROMPT,
-          messages: messages.map(m => ({
-            role: m.role === 'assistant' ? 'assistant' : 'user',
-            content: m.content
-          })),
+          messages: messages.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })),
           stream: true
         })
       });
 
-      // Stream Anthropic response
       const reader = response.body;
       let buffer = '';
       
-      reader.on('data', (chunk) => {
+      reader.on('data', chunk => {
         buffer += chunk.toString();
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
@@ -160,8 +139,7 @@ router.post('/stream', async (req, res) => {
       });
 
     } else if (provider === 'openai' || provider === 'groq') {
-      const url = PROVIDERS[provider].url;
-      response = await fetch(url, {
+      const response = await fetch(PROVIDERS[provider].url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -169,10 +147,7 @@ router.post('/stream', async (req, res) => {
         },
         body: JSON.stringify({
           model: selectedModel,
-          messages: [
-            { role: 'system', content: SYSTEM_PROMPT },
-            ...messages
-          ],
+          messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages],
           max_tokens: 8192,
           stream: true
         })
@@ -181,7 +156,7 @@ router.post('/stream', async (req, res) => {
       const reader = response.body;
       let buffer = '';
 
-      reader.on('data', (chunk) => {
+      reader.on('data', chunk => {
         buffer += chunk.toString();
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
@@ -207,48 +182,34 @@ router.post('/stream', async (req, res) => {
       });
 
     } else if (provider === 'gemini') {
-      // Gemini uses different streaming approach
       const url = `${PROVIDERS.gemini.url}/${selectedModel}:streamGenerateContent?key=${apiKey}`;
-      response = await fetch(url, {
+      const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [
             { role: 'user', parts: [{ text: SYSTEM_PROMPT }] },
-            ...messages.map(m => ({
-              role: m.role === 'assistant' ? 'model' : 'user',
-              parts: [{ text: m.content }]
-            }))
+            ...messages.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }))
           ],
           generationConfig: { maxOutputTokens: 8192 }
         })
       });
 
-      const reader = response.body;
-      let buffer = '';
-
-      reader.on('data', (chunk) => {
-        buffer += chunk.toString();
-        // Gemini returns JSON array chunks
-        try {
-          const matches = buffer.match(/\{[^{}]*"text"[^{}]*\}/g);
-          if (matches) {
-            for (const match of matches) {
-              const parsed = JSON.parse(match);
-              if (parsed.text) {
-                res.write(`data: ${JSON.stringify({ text: parsed.text, model: `${provider}/${selectedModel}` })}\n\n`);
-              }
+      const text = await response.text();
+      try {
+        const parts = text.match(/"text":\s*"([^"]*)"/g);
+        if (parts) {
+          for (const part of parts) {
+            const match = part.match(/"text":\s*"([^"]*)"/);
+            if (match) {
+              res.write(`data: ${JSON.stringify({ text: match[1].replace(/\\n/g, '\n'), model: `${provider}/${selectedModel}` })}\n\n`);
             }
           }
-        } catch (e) {}
-      });
-
-      reader.on('end', () => {
-        res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
-        res.end();
-      });
+        }
+      } catch (e) {}
+      res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+      res.end();
     }
-
   } catch (error) {
     console.error('Stream error:', error);
     res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
@@ -256,34 +217,18 @@ router.post('/stream', async (req, res) => {
   }
 });
 
-// Non-streaming endpoint (for compatibility)
+// NON-STREAMING endpoint
 router.post('/chat', async (req, res) => {
   const { message, model } = req.body;
-  
-  if (!message) {
-    return res.status(400).json({ error: 'Message required' });
-  }
+  if (!message) return res.status(400).json({ error: 'Message required' });
+
+  const selected = parseModel(model, message);
+  if (!selected) return res.status(500).json({ error: 'No AI provider configured' });
+
+  const { provider, model: selectedModel } = selected;
+  const apiKey = PROVIDERS[provider].getKey();
 
   try {
-    let selected;
-    if (model && model !== 'auto') {
-      const [provider, modelName] = model.includes('/') ? model.split('/') : ['auto', model];
-      if (provider !== 'auto' && PROVIDERS[provider]) {
-        selected = { provider, model: modelName };
-      } else {
-        selected = selectModel(message);
-      }
-    } else {
-      selected = selectModel(message);
-    }
-
-    if (!selected) {
-      return res.status(500).json({ error: 'No AI provider configured' });
-    }
-
-    const { provider, model: selectedModel } = selected;
-    const apiKey = PROVIDERS[provider].getKey();
-
     let response, data;
 
     if (provider === 'anthropic') {
@@ -302,10 +247,7 @@ router.post('/chat', async (req, res) => {
         })
       });
       data = await response.json();
-      return res.json({ 
-        response: data.content?.[0]?.text || 'No response',
-        model: `${provider}/${selectedModel}`
-      });
+      return res.json({ response: data.content?.[0]?.text || data.error?.message || 'No response', model: `${provider}/${selectedModel}` });
 
     } else if (provider === 'openai' || provider === 'groq') {
       response = await fetch(PROVIDERS[provider].url, {
@@ -316,18 +258,12 @@ router.post('/chat', async (req, res) => {
         },
         body: JSON.stringify({
           model: selectedModel,
-          messages: [
-            { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: message }
-          ],
+          messages: [{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: message }],
           max_tokens: 8192
         })
       });
       data = await response.json();
-      return res.json({
-        response: data.choices?.[0]?.message?.content || 'No response',
-        model: `${provider}/${selectedModel}`
-      });
+      return res.json({ response: data.choices?.[0]?.message?.content || data.error?.message || 'No response', model: `${provider}/${selectedModel}` });
 
     } else if (provider === 'gemini') {
       const url = `${PROVIDERS.gemini.url}/${selectedModel}:generateContent?key=${apiKey}`;
@@ -340,19 +276,14 @@ router.post('/chat', async (req, res) => {
         })
       });
       data = await response.json();
-      return res.json({
-        response: data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response',
-        model: `${provider}/${selectedModel}`
-      });
+      return res.json({ response: data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response', model: `${provider}/${selectedModel}` });
     }
-
   } catch (error) {
     console.error('Chat error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Get available models
 router.get('/models', (req, res) => {
   const available = [];
   for (const [provider, config] of Object.entries(PROVIDERS)) {
