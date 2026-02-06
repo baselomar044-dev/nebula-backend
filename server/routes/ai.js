@@ -7,7 +7,7 @@ const router = Router();
 const PROVIDERS = {
   anthropic: {
     url: 'https://api.anthropic.com/v1/messages',
-    models: ['claude-sonnet-4-20250514', 'claude-3-5-haiku-20241022'],
+    models: ['claude-3-5-sonnet-20241022', 'claude-3-haiku-20240307'],
     getKey: () => process.env.ANTHROPIC_API_KEY
   },
   openai: {
@@ -51,7 +51,7 @@ function selectModel(message) {
   
   // Priority: Anthropic > OpenAI > Groq > Gemini
   if (process.env.ANTHROPIC_API_KEY) {
-    return { provider: 'anthropic', model: isComplex ? 'claude-sonnet-4-20250514' : 'claude-3-5-haiku-20241022' };
+    return { provider: 'anthropic', model: isComplex ? 'claude-3-5-sonnet-20241022' : 'claude-3-haiku-20240307' };
   }
   if (process.env.OPENAI_API_KEY) {
     return { provider: 'openai', model: isComplex ? 'gpt-4o' : 'gpt-4o-mini' };
@@ -83,7 +83,7 @@ router.post('/stream', async (req, res) => {
   try {
     let selected;
     if (model && model !== 'auto') {
-      // Parse model string like "anthropic/claude-sonnet-4-20250514"
+      // Parse model string like "anthropic/claude-3-5-sonnet-20241022"
       const [provider, modelName] = model.includes('/') ? model.split('/') : ['auto', model];
       if (provider !== 'auto' && PROVIDERS[provider]) {
         selected = { provider, model: modelName };
