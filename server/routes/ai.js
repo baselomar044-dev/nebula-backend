@@ -104,7 +104,7 @@ router.post('/stream', async (req, res) => {
         },
         body: JSON.stringify({
           model: selectedModel,
-          max_tokens: 8192,
+          max_tokens: 4096,
           system: SYSTEM_PROMPT,
           messages: messages.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })),
           stream: true
@@ -148,7 +148,7 @@ router.post('/stream', async (req, res) => {
         body: JSON.stringify({
           model: selectedModel,
           messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages],
-          max_tokens: 8192,
+          max_tokens: 4096,
           stream: true
         })
       });
@@ -241,7 +241,7 @@ router.post('/chat', async (req, res) => {
         },
         body: JSON.stringify({
           model: selectedModel,
-          max_tokens: 8192,
+          max_tokens: 4096,
           system: SYSTEM_PROMPT,
           messages: [{ role: 'user', content: message }]
         })
@@ -259,7 +259,7 @@ router.post('/chat', async (req, res) => {
         body: JSON.stringify({
           model: selectedModel,
           messages: [{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: message }],
-          max_tokens: 8192
+          max_tokens: 4096
         })
       });
       data = await response.json();
