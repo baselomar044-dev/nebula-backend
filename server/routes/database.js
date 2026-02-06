@@ -1,31 +1,55 @@
 import { Router } from 'express';
-import Database from 'better-sqlite3';
-import path from 'path';
+import initSqlJs from 'sql.js';
 import fs from 'fs';
+import path from 'path';
 
 const router = Router();
-
-// Store databases per session (in-memory for demo, file-based for persistence)
-const databases = new Map();
 const DB_DIR = './data/user_dbs';
+const databases = new Map();
+let SQL = null;
+
+// Initialize sql.js
+async function initSQL() {
+  if (!SQL) {
+    SQL = await initSqlJs();
+  }
+  return SQL;
+}
 
 // Ensure DB directory exists
 if (!fs.existsSync(DB_DIR)) {
   fs.mkdirSync(DB_DIR, { recursive: true });
 }
 
-function getDb(sessionId) {
+async function getDb(sessionId) {
   if (!databases.has(sessionId)) {
+    await initSQL();
     const dbPath = path.join(DB_DIR, `${sessionId}.db`);
-    const db = new Database(dbPath);
-    db.pragma('journal_mode = WAL');
+    let db;
+    
+    if (fs.existsSync(dbPath)) {
+      const data = fs.readFileSync(dbPath);
+      db = new SQL.Database(data);
+    } else {
+      db = new SQL.Database();
+    }
+    
     databases.set(sessionId, db);
   }
   return databases.get(sessionId);
 }
 
+function saveDb(sessionId) {
+  const db = databases.get(sessionId);
+  if (db) {
+    const data = db.export();
+    const buffer = Buffer.from(data);
+    fs.writeFileSync(path.join(DB_DIR, `${sessionId}.db`), buffer);
+  }
+}
+
 // Execute SQL query
-router.post('/query', (req, res) => {
+router.post('/query', async (req, res) => {
   const { sessionId = 'default', sql, params = [] } = req.body;
   
   if (!sql) {
@@ -33,22 +57,24 @@ router.post('/query', (req, res) => {
   }
 
   try {
-    const db = getDb(sessionId);
+    const db = await getDb(sessionId);
     const trimmedSql = sql.trim().toUpperCase();
     
-    // Determine if it's a read or write operation
-    if (trimmedSql.startsWith('SELECT') || trimmedSql.startsWith('PRAGMA') || trimmedSql.startsWith('EXPLAIN')) {
+    if (trimmedSql.startsWith('SELECT') || trimmedSql.startsWith('PRAGMA')) {
       const stmt = db.prepare(sql);
-      const rows = stmt.all(...params);
+      if (params.length) stmt.bind(params);
+      
+      const rows = [];
+      while (stmt.step()) {
+        rows.push(stmt.getAsObject());
+      }
+      stmt.free();
+      
       res.json({ success: true, rows, rowCount: rows.length });
     } else {
-      const stmt = db.prepare(sql);
-      const result = stmt.run(...params);
-      res.json({ 
-        success: true, 
-        changes: result.changes,
-        lastInsertRowid: result.lastInsertRowid
-      });
+      db.run(sql, params);
+      saveDb(sessionId);
+      res.json({ success: true, changes: db.getRowsModified() });
     }
   } catch (error) {
     console.error('SQL error:', error);
@@ -57,34 +83,30 @@ router.post('/query', (req, res) => {
 });
 
 // Get database schema
-router.get('/schema', (req, res) => {
+router.get('/schema', async (req, res) => {
   const { sessionId = 'default' } = req.query;
   
   try {
-    const db = getDb(sessionId);
-    
-    // Get all tables
-    const tables = db.prepare(`
-      SELECT name FROM sqlite_master 
-      WHERE type='table' AND name NOT LIKE 'sqlite_%'
-    `).all();
+    const db = await getDb(sessionId);
+    const tables = db.exec("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
     
     const schema = {};
     
-    for (const table of tables) {
-      const columns = db.prepare(`PRAGMA table_info(${table.name})`).all();
-      const rowCount = db.prepare(`SELECT COUNT(*) as count FROM ${table.name}`).get();
-      
-      schema[table.name] = {
-        columns: columns.map(c => ({
-          name: c.name,
-          type: c.type,
-          nullable: !c.notnull,
-          primaryKey: c.pk === 1,
-          defaultValue: c.dflt_value
-        })),
-        rowCount: rowCount.count
-      };
+    if (tables.length && tables[0].values) {
+      for (const [tableName] of tables[0].values) {
+        const columns = db.exec(`PRAGMA table_info(${tableName})`);
+        const count = db.exec(`SELECT COUNT(*) as count FROM ${tableName}`);
+        
+        schema[tableName] = {
+          columns: columns[0]?.values?.map(col => ({
+            name: col[1],
+            type: col[2],
+            nullable: !col[3],
+            primaryKey: col[5] === 1
+          })) || [],
+          rowCount: count[0]?.values?.[0]?.[0] || 0
+        };
+      }
     }
     
     res.json({ success: true, schema });
@@ -94,100 +116,33 @@ router.get('/schema', (req, res) => {
   }
 });
 
-// Create table with smart schema inference
-router.post('/create-table', (req, res) => {
-  const { sessionId = 'default', tableName, columns } = req.body;
-  
-  if (!tableName || !columns || !Array.isArray(columns)) {
-    return res.status(400).json({ error: 'Table name and columns required' });
-  }
-
-  try {
-    const db = getDb(sessionId);
-    
-    const columnDefs = columns.map(col => {
-      let def = `${col.name} ${col.type || 'TEXT'}`;
-      if (col.primaryKey) def += ' PRIMARY KEY';
-      if (col.autoIncrement) def += ' AUTOINCREMENT';
-      if (col.notNull) def += ' NOT NULL';
-      if (col.unique) def += ' UNIQUE';
-      if (col.default !== undefined) def += ` DEFAULT ${col.default}`;
-      return def;
-    }).join(', ');
-    
-    const sql = `CREATE TABLE IF NOT EXISTS ${tableName} (${columnDefs})`;
-    db.exec(sql);
-    
-    res.json({ success: true, sql });
-  } catch (error) {
-    console.error('Create table error:', error);
-    res.status(400).json({ error: error.message });
-  }
-});
-
-// Insert data (batch support)
-router.post('/insert', (req, res) => {
-  const { sessionId = 'default', tableName, rows } = req.body;
-  
-  if (!tableName || !rows || !Array.isArray(rows) || rows.length === 0) {
-    return res.status(400).json({ error: 'Table name and rows required' });
-  }
-
-  try {
-    const db = getDb(sessionId);
-    
-    const columns = Object.keys(rows[0]);
-    const placeholders = columns.map(() => '?').join(', ');
-    const sql = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES (${placeholders})`;
-    
-    const stmt = db.prepare(sql);
-    const insertMany = db.transaction((rows) => {
-      for (const row of rows) {
-        stmt.run(...columns.map(c => row[c]));
-      }
-    });
-    
-    insertMany(rows);
-    
-    res.json({ success: true, inserted: rows.length });
-  } catch (error) {
-    console.error('Insert error:', error);
-    res.status(400).json({ error: error.message });
-  }
-});
-
 // Export database as SQL
-router.get('/export', (req, res) => {
+router.get('/export', async (req, res) => {
   const { sessionId = 'default' } = req.query;
   
   try {
-    const db = getDb(sessionId);
+    const db = await getDb(sessionId);
     let sql = '';
     
-    // Get all tables
-    const tables = db.prepare(`
-      SELECT name, sql FROM sqlite_master 
-      WHERE type='table' AND name NOT LIKE 'sqlite_%'
-    `).all();
+    const tables = db.exec("SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
     
-    for (const table of tables) {
-      sql += `-- Table: ${table.name}\n`;
-      sql += `${table.sql};\n\n`;
-      
-      // Export data
-      const rows = db.prepare(`SELECT * FROM ${table.name}`).all();
-      if (rows.length > 0) {
-        const columns = Object.keys(rows[0]);
-        for (const row of rows) {
-          const values = columns.map(c => {
-            const val = row[c];
-            if (val === null) return 'NULL';
-            if (typeof val === 'number') return val;
-            return `'${String(val).replace(/'/g, "''")}'`;
-          }).join(', ');
-          sql += `INSERT INTO ${table.name} (${columns.join(', ')}) VALUES (${values});\n`;
+    if (tables.length && tables[0].values) {
+      for (const [name, createSql] of tables[0].values) {
+        sql += `-- Table: ${name}\n${createSql};\n\n`;
+        
+        const rows = db.exec(`SELECT * FROM ${name}`);
+        if (rows.length && rows[0].values) {
+          const columns = rows[0].columns;
+          for (const row of rows[0].values) {
+            const values = row.map(v => {
+              if (v === null) return 'NULL';
+              if (typeof v === 'number') return v;
+              return `'${String(v).replace(/'/g, "''")}'`;
+            }).join(', ');
+            sql += `INSERT INTO ${name} (${columns.join(', ')}) VALUES (${values});\n`;
+          }
+          sql += '\n';
         }
-        sql += '\n';
       }
     }
     
@@ -199,7 +154,7 @@ router.get('/export', (req, res) => {
 });
 
 // Import SQL dump
-router.post('/import', (req, res) => {
+router.post('/import', async (req, res) => {
   const { sessionId = 'default', sql } = req.body;
   
   if (!sql) {
@@ -207,8 +162,9 @@ router.post('/import', (req, res) => {
   }
 
   try {
-    const db = getDb(sessionId);
+    const db = await getDb(sessionId);
     db.exec(sql);
+    saveDb(sessionId);
     res.json({ success: true });
   } catch (error) {
     console.error('Import error:', error);
@@ -216,23 +172,8 @@ router.post('/import', (req, res) => {
   }
 });
 
-// Drop table
-router.delete('/table/:tableName', (req, res) => {
-  const { sessionId = 'default' } = req.query;
-  const { tableName } = req.params;
-  
-  try {
-    const db = getDb(sessionId);
-    db.exec(`DROP TABLE IF EXISTS ${tableName}`);
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Drop table error:', error);
-    res.status(400).json({ error: error.message });
-  }
-});
-
 // Reset database
-router.post('/reset', (req, res) => {
+router.post('/reset', async (req, res) => {
   const { sessionId = 'default' } = req.body;
   
   try {
