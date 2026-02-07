@@ -7,6 +7,7 @@ import gitRouter from './routes/git.js';
 import databaseRouter from './routes/database.js';
 import executeRouter from './routes/execute.js';
 import debugRouter from './routes/debug.js';
+import deployRouter from './routes/deploy.js';
 
 const app = express();
 const server = createServer(app);
@@ -33,8 +34,8 @@ app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'ok', 
     time: new Date().toISOString(),
-    version: '2.0.0',
-    features: ['streaming', 'git', 'database', 'execute', 'debug']
+    version: '2.1.0',
+    features: ['streaming', 'git', 'database', 'execute', 'debug', 'deploy']
   });
 });
 
@@ -44,6 +45,7 @@ app.use('/api/git', gitRouter);
 app.use('/api/db', databaseRouter);
 app.use('/api/execute', executeRouter);
 app.use('/api/debug', debugRouter);
+app.use('/api/deploy', deployRouter);
 
 // Get available features/config
 app.get('/api/config', (req, res) => {
@@ -54,7 +56,8 @@ app.get('/api/config', (req, res) => {
       git: true,
       database: true,
       execute: true,
-      debug: true
+      debug: true,
+      deploy: !!(process.env.NETLIFY_TOKEN || process.env.VERCEL_TOKEN)
     },
     models: {
       anthropic: process.env.ANTHROPIC_API_KEY ? ['claude-3-5-sonnet-20241022', 'claude-3-haiku-20240307'] : [],
@@ -78,7 +81,6 @@ wss.on('connection', (ws, req) => {
     try {
       const msg = JSON.parse(data);
       
-      // Handle different message types
       switch (msg.type) {
         case 'ping':
           ws.send(JSON.stringify({ type: 'pong', time: Date.now() }));
@@ -106,7 +108,6 @@ wss.on('connection', (ws, req) => {
     console.log(`WebSocket disconnected: ${id}`);
   });
   
-  // Send welcome message
   ws.send(JSON.stringify({ 
     type: 'connected', 
     id,
@@ -114,7 +115,6 @@ wss.on('connection', (ws, req) => {
   }));
 });
 
-// Broadcast to all connected clients
 function broadcast(message, channel = null) {
   const data = JSON.stringify(message);
   clients.forEach((ws) => {
@@ -142,7 +142,7 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`
 ╔═══════════════════════════════════════════╗
-║           AI App Backend v2.0             ║
+║           AI App Backend v2.1             ║
 ╠═══════════════════════════════════════════╣
 ║  Server running on port ${PORT}              ║
 ║                                           ║
@@ -152,6 +152,7 @@ server.listen(PORT, () => {
 ║  ✓ Database support                       ║
 ║  ✓ Code execution                         ║
 ║  ✓ Error debugging                        ║
+║  ✓ Deploy (Netlify, Vercel)               ║
 ║  ✓ WebSocket real-time                    ║
 ╚═══════════════════════════════════════════╝
   `);
