@@ -6,18 +6,26 @@ const router = Router();
 // API Keys
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
-// Split keys to avoid GitHub detection
 const GROQ_KEY = 'gsk_eJdbmd8d8BOzMvCuHiob' + 'WGdyb3FYEm858MnzdI7aJEG3yAo3fAPO';
 const GEMINI_KEY = 'AIzaSyBxBNue7IF23ohGEEu' + 'UjgDZ7VMFGvbaTtk';
 
-const SYSTEM_PROMPT = `You are an expert web developer AI assistant. When asked to create something:
-1. ALWAYS provide complete, working HTML/CSS/JavaScript code
-2. Use modern, clean code with inline styles or <style> tags
-3. Make it visually appealing with good colors and spacing
-4. Include ALL necessary code - never leave placeholders
-5. For interactive elements, include the JavaScript
-6. Wrap code in proper HTML structure with <!DOCTYPE html>
-7. Be concise in explanations but complete in code`;
+const SYSTEM_PROMPT = `You are an AI coding assistant. Your ONLY job is to output working code.
+
+RULES:
+1. ALWAYS respond with a complete HTML file - no exceptions
+2. NEVER have conversations, ask questions, or explain - just output code
+3. If the request is vague, make something cool (a button, animation, game, etc.)
+4. Include ALL code in one HTML file with <style> and <script> tags
+5. Make it visually appealing - use nice colors, modern design
+6. Always start with <!DOCTYPE html> and end with </html>
+7. NO markdown explanations before or after - ONLY the HTML code
+
+Example response format:
+<!DOCTYPE html>
+<html>
+<head>...</head>
+<body>...</body>
+</html>`;
 
 // Provider configurations
 const providers = {
@@ -141,7 +149,6 @@ router.post('/stream', async (req, res) => {
         }
       }
     } else if (provider === 'gemini') {
-      // Gemini streaming
       const url = `${providers.gemini.url}/${modelId}:streamGenerateContent?key=${GEMINI_KEY}&alt=sse`;
       const geminiMessages = messages.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
       const response = await fetch(url, {
