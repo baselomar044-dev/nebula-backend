@@ -6,7 +6,7 @@ const router = Router();
 const PROVIDERS = {
   anthropic: {
     url: 'https://api.anthropic.com/v1/messages',
-    models: ['claude-3-5-sonnet-20241022', 'claude-3-haiku-20240307'],
+    models: ['claude-sonnet-4-20250514', 'claude-3-haiku-20240307'],
     getKey: () => process.env.ANTHROPIC_API_KEY
   },
   openai: {
@@ -26,28 +26,31 @@ const PROVIDERS = {
   }
 };
 
-const SYSTEM_PROMPT = `You are an expert full-stack developer AI assistant. You help users build web applications, debug code, and solve programming problems.
+const SYSTEM_PROMPT = `You are an expert full-stack developer AI. Build complete, working web applications.
 
 RULES:
-1. Always provide complete, working code
-2. Use modern best practices
-3. Include helpful comments
-4. When creating files, use this format:
+1. ALWAYS generate complete, working code
+2. For web apps, include HTML, CSS, and JavaScript
+3. Use this format for files:
 
 **filename.ext**
 \`\`\`language
 code here
 \`\`\`
 
-5. For multi-file projects, create all necessary files
-6. Explain your approach briefly before code`;
+4. Create all necessary files for the project
+5. Make it visually appealing with modern CSS
+6. Include interactivity with JavaScript
+7. Test mentally before providing code
+
+IMPORTANT: When user says "fix" or "preview", generate complete fixed code.`;
 
 function selectModel(message) {
-  const complexKeywords = ['build', 'create', 'full', 'complex', 'application', 'system', 'complete'];
+  const complexKeywords = ['build', 'create', 'full', 'complex', 'application', 'system', 'complete', 'app'];
   const isComplex = complexKeywords.some(k => message.toLowerCase().includes(k));
   
   if (process.env.ANTHROPIC_API_KEY) {
-    return { provider: 'anthropic', model: isComplex ? 'claude-3-5-sonnet-20241022' : 'claude-3-haiku-20240307' };
+    return { provider: 'anthropic', model: isComplex ? 'claude-sonnet-4-20250514' : 'claude-3-haiku-20240307' };
   }
   if (process.env.OPENAI_API_KEY) {
     return { provider: 'openai', model: isComplex ? 'gpt-4o' : 'gpt-4o-mini' };
@@ -67,7 +70,7 @@ function parseModel(model, message) {
   }
   const [provider, modelName] = model.includes('/') ? model.split('/') : ['auto', model];
   if (provider !== 'auto' && PROVIDERS[provider]) {
-    return { provider, model: modelName };
+    return { provider, model: modelName || PROVIDERS[provider].models[0] };
   }
   return selectModel(message);
 }
@@ -160,7 +163,7 @@ router.post('/stream', async (req, res) => {
         buffer += chunk.toString();
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
-
+        
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             const data = line.slice(6);
@@ -182,31 +185,19 @@ router.post('/stream', async (req, res) => {
       });
 
     } else if (provider === 'gemini') {
-      const url = `${PROVIDERS.gemini.url}/${selectedModel}:streamGenerateContent?key=${apiKey}`;
+      // Gemini doesn't support streaming easily, fall back to regular
+      const url = `${PROVIDERS.gemini.url}/${selectedModel}:generateContent?key=${apiKey}`;
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: [
-            { role: 'user', parts: [{ text: SYSTEM_PROMPT }] },
-            ...messages.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }))
-          ],
+          contents: [{ role: 'user', parts: [{ text: SYSTEM_PROMPT + '\n\n' + message }] }],
           generationConfig: { maxOutputTokens: 8192 }
         })
       });
-
-      const text = await response.text();
-      try {
-        const parts = text.match(/"text":\s*"([^"]*)"/g);
-        if (parts) {
-          for (const part of parts) {
-            const match = part.match(/"text":\s*"([^"]*)"/);
-            if (match) {
-              res.write(`data: ${JSON.stringify({ text: match[1].replace(/\\n/g, '\n'), model: `${provider}/${selectedModel}` })}\n\n`);
-            }
-          }
-        }
-      } catch (e) {}
+      const data = await response.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response';
+      res.write(`data: ${JSON.stringify({ text, model: `${provider}/${selectedModel}` })}\n\n`);
       res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
       res.end();
     }
@@ -247,7 +238,8 @@ router.post('/chat', async (req, res) => {
         })
       });
       data = await response.json();
-      return res.json({ response: data.content?.[0]?.text || data.error?.message || 'No response', model: `${provider}/${selectedModel}` });
+      const text = data.content?.[0]?.text || data.error?.message || 'No response';
+      return res.json({ response: text, model: `${provider}/${selectedModel}` });
 
     } else if (provider === 'openai' || provider === 'groq') {
       response = await fetch(PROVIDERS[provider].url, {
