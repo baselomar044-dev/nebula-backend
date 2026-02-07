@@ -27,154 +27,105 @@ Example response format:
 <body>...</body>
 </html>`;
 
-// Provider configurations
-const providers = {
-  claude: {
-    url: 'https://api.anthropic.com/v1/messages',
-    models: { 'claude-sonnet': 'claude-sonnet-4-20250514', 'claude-haiku': 'claude-3-haiku-20240307' }
-  },
-  openai: {
-    url: 'https://api.openai.com/v1/chat/completions',
-    models: { 'gpt-4o': 'gpt-4o', 'gpt-4o-mini': 'gpt-4o-mini' }
-  },
-  groq: {
-    url: 'https://api.groq.com/openai/v1/chat/completions',
-    models: { 'llama-70b': 'llama-3.3-70b-versatile', 'llama-8b': 'llama-3.1-8b-instant' }
-  },
-  gemini: {
-    url: 'https://generativelanguage.googleapis.com/v1beta/models',
-    models: { 'gemini-flash': 'gemini-2.5-flash', 'gemini-pro': 'gemini-2.5-pro' }
-  }
+// Model mapping
+const MODEL_MAP = {
+  'auto': { provider: 'claude', model: 'claude-sonnet-4-20250514' },
+  'claude-sonnet': { provider: 'claude', model: 'claude-sonnet-4-20250514' },
+  'claude-haiku': { provider: 'claude', model: 'claude-3-haiku-20240307' },
+  'gpt-4o': { provider: 'openai', model: 'gpt-4o' },
+  'gpt-4o-mini': { provider: 'openai', model: 'gpt-4o-mini' },
+  'llama-70b': { provider: 'groq', model: 'llama-3.3-70b-versatile' },
+  'llama-8b': { provider: 'groq', model: 'llama-3.1-8b-instant' },
+  'gemini-flash': { provider: 'gemini', model: 'gemini-2.5-flash-preview-04-17' },
+  'gemini-pro': { provider: 'gemini', model: 'gemini-2.5-pro-preview-05-06' }
 };
 
-function getProvider(model) {
-  if (model?.startsWith('claude')) return 'claude';
-  if (model?.startsWith('gpt')) return 'openai';
-  if (model?.startsWith('llama')) return 'groq';
-  if (model?.startsWith('gemini')) return 'gemini';
-  return 'claude';
-}
-
-// Non-streaming chat
 router.post('/chat', async (req, res) => {
   try {
-    const { messages, model = 'claude-sonnet' } = req.body;
-    const provider = getProvider(model);
-    const modelId = providers[provider].models[model] || model;
+    const { messages, model = 'auto' } = req.body;
+    
+    // Get correct provider and model
+    const config = MODEL_MAP[model] || MODEL_MAP['auto'];
+    const provider = config.provider;
+    const modelId = config.model;
+    
+    console.log(`Using provider: ${provider}, model: ${modelId}`);
     
     let response, data, text;
     
     if (provider === 'claude') {
-      response = await fetch(providers.claude.url, {
+      response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({ model: modelId, max_tokens: 4096, system: SYSTEM_PROMPT, messages })
+        headers: { 
+          'Content-Type': 'application/json', 
+          'x-api-key': ANTHROPIC_KEY, 
+          'anthropic-version': '2023-06-01' 
+        },
+        body: JSON.stringify({ 
+          model: modelId, 
+          max_tokens: 4096, 
+          system: SYSTEM_PROMPT, 
+          messages 
+        })
       });
       data = await response.json();
-      text = data.content?.[0]?.text || data.error?.message || 'No response';
-    } else if (provider === 'openai' || provider === 'groq') {
-      const key = provider === 'openai' ? OPENAI_KEY : GROQ_KEY;
-      response = await fetch(providers[provider].url, {
+      console.log('Claude response:', JSON.stringify(data).substring(0, 200));
+      text = data.content?.[0]?.text || data.error?.message || 'Error: ' + JSON.stringify(data);
+      
+    } else if (provider === 'openai') {
+      response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
-        body: JSON.stringify({ model: modelId, messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages], max_tokens: 4096 })
+        headers: { 
+          'Content-Type': 'application/json', 
+          'Authorization': `Bearer ${OPENAI_KEY}` 
+        },
+        body: JSON.stringify({ 
+          model: modelId, 
+          messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages], 
+          max_tokens: 4096 
+        })
       });
       data = await response.json();
-      text = data.choices?.[0]?.message?.content || data.error?.message || 'No response';
+      text = data.choices?.[0]?.message?.content || data.error?.message || 'Error: ' + JSON.stringify(data);
+      
+    } else if (provider === 'groq') {
+      response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json', 
+          'Authorization': `Bearer ${GROQ_KEY}` 
+        },
+        body: JSON.stringify({ 
+          model: modelId, 
+          messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages], 
+          max_tokens: 4096 
+        })
+      });
+      data = await response.json();
+      text = data.choices?.[0]?.message?.content || data.error?.message || 'Error: ' + JSON.stringify(data);
+      
     } else if (provider === 'gemini') {
-      const url = `${providers.gemini.url}/${modelId}:generateContent?key=${GEMINI_KEY}`;
-      const geminiMessages = messages.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${GEMINI_KEY}`;
+      const geminiMessages = messages.map(m => ({ 
+        role: m.role === 'assistant' ? 'model' : 'user', 
+        parts: [{ text: m.content }] 
+      }));
       response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: geminiMessages, systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] } })
+        body: JSON.stringify({ 
+          contents: geminiMessages, 
+          systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] } 
+        })
       });
       data = await response.json();
-      text = data.candidates?.[0]?.content?.parts?.[0]?.text || data.error?.message || 'No response';
+      text = data.candidates?.[0]?.content?.parts?.[0]?.text || data.error?.message || 'Error: ' + JSON.stringify(data);
     }
     
     res.json({ text, model: modelId, provider });
   } catch (err) {
+    console.error('AI Error:', err);
     res.status(500).json({ error: err.message });
-  }
-});
-
-// Streaming chat
-router.post('/stream', async (req, res) => {
-  try {
-    const { messages, model = 'claude-sonnet' } = req.body;
-    const provider = getProvider(model);
-    const modelId = providers[provider].models[model] || model;
-    
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    
-    if (provider === 'claude') {
-      const response = await fetch(providers.claude.url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({ model: modelId, max_tokens: 4096, stream: true, system: SYSTEM_PROMPT, messages })
-      });
-      for await (const chunk of response.body) {
-        const lines = chunk.toString().split('\n');
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              if (data.type === 'content_block_delta') {
-                res.write(`data: ${JSON.stringify({ text: data.delta?.text || '' })}\n\n`);
-              }
-            } catch {}
-          }
-        }
-      }
-    } else if (provider === 'openai' || provider === 'groq') {
-      const key = provider === 'openai' ? OPENAI_KEY : GROQ_KEY;
-      const response = await fetch(providers[provider].url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
-        body: JSON.stringify({ model: modelId, messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages], max_tokens: 4096, stream: true })
-      });
-      for await (const chunk of response.body) {
-        const lines = chunk.toString().split('\n');
-        for (const line of lines) {
-          if (line.startsWith('data: ') && !line.includes('[DONE]')) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              const text = data.choices?.[0]?.delta?.content;
-              if (text) res.write(`data: ${JSON.stringify({ text })}\n\n`);
-            } catch {}
-          }
-        }
-      }
-    } else if (provider === 'gemini') {
-      const url = `${providers.gemini.url}/${modelId}:streamGenerateContent?key=${GEMINI_KEY}&alt=sse`;
-      const geminiMessages = messages.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: geminiMessages, systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] } })
-      });
-      for await (const chunk of response.body) {
-        const lines = chunk.toString().split('\n');
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-              if (text) res.write(`data: ${JSON.stringify({ text })}\n\n`);
-            } catch {}
-          }
-        }
-      }
-    }
-    
-    res.write('data: [DONE]\n\n');
-    res.end();
-  } catch (err) {
-    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
-    res.end();
   }
 });
 
