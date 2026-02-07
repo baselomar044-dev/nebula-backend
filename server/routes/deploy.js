@@ -4,14 +4,17 @@ import crypto from 'crypto';
 
 const router = Router();
 
+// Tokens (from env or fallback)
+const NETLIFY_TOKEN = process.env.NETLIFY_TOKEN || 'nfp_qa6waRyNGqgJwLar8kn31gtkCXDWJNKssssM76ed';
+const VERCEL_TOKEN = process.env.VERCEL_TOKEN || 'Jt5ktin1DUkHa4Mi4UeFHRqb';
+
 // Deploy to Netlify
 router.post('/netlify', async (req, res) => {
   try {
     const { files } = req.body;
-    const NETLIFY_TOKEN = process.env.NETLIFY_TOKEN;
     
-    if (!NETLIFY_TOKEN) {
-      return res.json({ error: 'Netlify token not configured' });
+    if (!files || files.length === 0) {
+      return res.json({ error: 'No files provided' });
     }
 
     // Create site
@@ -25,17 +28,20 @@ router.post('/netlify', async (req, res) => {
     });
     
     const site = await siteRes.json();
-    if (!site.id) throw new Error('Failed to create site');
+    if (!site.id) {
+      return res.json({ error: 'Failed to create site: ' + JSON.stringify(site) });
+    }
 
-    // Create deploy with files
+    // Create file digest
     const fileDigest = {};
     const fileContents = {};
     
     for (const file of files) {
       const path = file.path.startsWith('/') ? file.path : '/' + file.path;
-      const hash = crypto.createHash('sha1').update(file.content).digest('hex');
+      const content = file.content || '';
+      const hash = crypto.createHash('sha1').update(content).digest('hex');
       fileDigest[path] = hash;
-      fileContents[hash] = file.content;
+      fileContents[hash] = content;
     }
 
     // Start deploy
@@ -66,14 +72,18 @@ router.post('/netlify', async (req, res) => {
       }
     }
 
+    // Wait a moment for deploy to process
+    await new Promise(r => setTimeout(r, 2000));
+
     res.json({
       success: true,
-      url: deploy.ssl_url || deploy.url || `https://${site.subdomain}.netlify.app`,
+      url: `https://${site.subdomain}.netlify.app`,
       siteId: site.id,
       deployId: deploy.id
     });
 
   } catch (err) {
+    console.error('Netlify deploy error:', err);
     res.json({ error: err.message });
   }
 });
@@ -82,10 +92,9 @@ router.post('/netlify', async (req, res) => {
 router.post('/vercel', async (req, res) => {
   try {
     const { files } = req.body;
-    const VERCEL_TOKEN = process.env.VERCEL_TOKEN;
     
-    if (!VERCEL_TOKEN) {
-      return res.json({ error: 'Vercel token not configured' });
+    if (!files || Object.keys(files).length === 0) {
+      return res.json({ error: 'No files provided' });
     }
 
     // Format files for Vercel
@@ -105,16 +114,14 @@ router.post('/vercel', async (req, res) => {
       body: JSON.stringify({
         name: 'ai-deploy-' + Date.now(),
         files: vercelFiles,
-        projectSettings: {
-          framework: null
-        }
+        projectSettings: { framework: null }
       })
     });
 
     const data = await response.json();
     
     if (data.error) {
-      throw new Error(data.error.message || 'Deploy failed');
+      return res.json({ error: data.error.message || 'Deploy failed' });
     }
 
     res.json({
@@ -124,8 +131,17 @@ router.post('/vercel', async (req, res) => {
     });
 
   } catch (err) {
+    console.error('Vercel deploy error:', err);
     res.json({ error: err.message });
   }
+});
+
+// Status endpoint
+router.get('/status', (req, res) => {
+  res.json({
+    netlify: !!NETLIFY_TOKEN,
+    vercel: !!VERCEL_TOKEN
+  });
 });
 
 export default router;
